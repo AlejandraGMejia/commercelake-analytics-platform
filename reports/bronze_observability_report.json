@@ -1,0 +1,41 @@
+{
+  "run_id": "43ffa04f507145139c1e08962d040a62",
+  "layer": "bronze",
+  "total_rows": 1067371,
+  "observations": {
+    "BRZ101": {
+      "metric": "missing_customer_id",
+      "count": 243007,
+      "percentage": 22.7669,
+      "severity": "info"
+    },
+    "BRZ102": {
+      "metric": "negative_quantity",
+      "count": 22950,
+      "percentage": 2.1501,
+      "severity": "info"
+    },
+    "BRZ103": {
+      "metric": "cancelled_invoice",
+      "count": 19494,
+      "percentage": 1.8264,
+      "severity": "info"
+    },
+    "BRZ104": {
+      "metric": "non_positive_price",
+      "count": 6207,
+      "percentage": 0.5815,
+      "severity": "warning"
+    },
+    "BRZ105": {
+      "metric": "repeated_fingerprint",
+      "count": 34335,
+      "percentage": 3.2168,
+      "severity": "warning"
+    }
+  },
+  "preservation": {
+    "source_rows_modified": false,
+    "source_rows_deleted": false
+  }
+}

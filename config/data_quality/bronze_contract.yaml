@@ -1,0 +1,70 @@
+contract_version: "1.0"
+
+dataset:
+  name: online_retail_ii
+  layer: bronze
+  format: parquet
+  description: >
+    Versioned raw retail transactions preserving
+    source records, cancellations, duplicates,
+    and source-level anomalies.
+
+validation:
+  expected_total_rows: 1067371
+  require_complete_source: true
+  require_manifest: true
+  require_all_files: true
+  require_partition_reconciliation: true
+
+critical_rules:
+  - id: BRZ001
+    name: schema_compatibility
+    description: All Parquet files must match the expected schema.
+
+  - id: BRZ002
+    name: file_integrity
+    description: All files declared in the manifest must exist.
+
+  - id: BRZ003
+    name: row_count_reconciliation
+    description: Parquet row counts must match the manifest.
+
+  - id: BRZ004
+    name: source_provenance
+    description: Source sheet and source row number cannot be null.
+
+  - id: BRZ005
+    name: fingerprint_presence
+    description: Every source record must have a fingerprint.
+
+observability_rules:
+  - id: BRZ101
+    name: missing_customer_id
+    severity: info
+    action: preserve_and_report
+
+  - id: BRZ102
+    name: negative_quantity
+    severity: info
+    action: preserve_and_report
+
+  - id: BRZ103
+    name: cancelled_invoice
+    severity: info
+    action: preserve_and_report
+
+  - id: BRZ104
+    name: non_positive_price
+    severity: warning
+    action: preserve_and_report
+
+  - id: BRZ105
+    name: repeated_fingerprint
+    severity: warning
+    action: preserve_and_report
+
+preservation_policy:
+  drop_source_rows: false
+  deduplicate_bronze: false
+  remove_cancellations: false
+  impute_missing_customers: false

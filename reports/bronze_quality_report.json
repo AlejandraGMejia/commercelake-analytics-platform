@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "run_id": "43ffa04f507145139c1e08962d040a62",
+  "contract_version": "1.0",
+  "metrics": {
+    "invalid_source_sheet": 0,
+    "invalid_source_row_number": 0,
+    "invalid_row_fingerprint": 0,
+    "files_checked": 131,
+    "rows_checked": 1067371
+  },
+  "failures": []
+}
