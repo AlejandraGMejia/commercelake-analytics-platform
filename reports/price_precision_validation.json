@@ -1,0 +1,9 @@
+{
+  "total_rows": 1067371,
+  "valid_prices": 1067371,
+  "null_prices": 0,
+  "invalid_prices": 0,
+  "maximum_absolute_price": "53594.36",
+  "invalid_examples": [],
+  "compatible_with_decimal_18_4": true
+}
