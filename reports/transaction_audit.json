@@ -1,0 +1,45 @@
+{
+  "source": "UCI Online Retail II",
+  "total_rows": 1067371,
+  "metrics": {
+    "rows": 1067371,
+    "cancellation": 19494,
+    "negative_quantity": 22950,
+    "cancellation_and_negative_quantity": 19493,
+    "zero_price": 6202,
+    "negative_quantity_without_cancellation": 3457,
+    "within_sheet_duplicates": 11812,
+    "cancellation_without_negative_quantity": 1,
+    "negative_price": 5,
+    "cross_sheet_duplicates": 22523
+  },
+  "sheets": {
+    "Year 2009-2010": {
+      "rows": 525461,
+      "cancellation": 10206,
+      "negative_quantity": 12326,
+      "cancellation_and_negative_quantity": 10205,
+      "zero_price": 3687,
+      "negative_quantity_without_cancellation": 2121,
+      "within_sheet_duplicates": 6865,
+      "cancellation_without_negative_quantity": 1,
+      "negative_price": 3
+    },
+    "Year 2010-2011": {
+      "rows": 541910,
+      "cancellation": 9288,
+      "negative_quantity": 10624,
+      "cancellation_and_negative_quantity": 9288,
+      "zero_price": 2515,
+      "negative_quantity_without_cancellation": 1336,
+      "cross_sheet_duplicates": 22523,
+      "within_sheet_duplicates": 4947,
+      "negative_price": 2
+    }
+  },
+  "methodology": {
+    "fingerprint": "SHA256 of normalized source values",
+    "duplicate_scope": "Previously observed fingerprints across both worksheets",
+    "raw_data_modified": false
+  }
+}
