@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from commercelake.cloud.bigquery_publisher import PublicationPlan
+from commercelake.cloud.bigquery_schema_validation import expected_bigquery_schema
 from commercelake.cloud.bigquery_staging_runner import publish_staging_tables
 from commercelake.warehouse.loader import LOAD_ORDER
 
@@ -41,6 +42,19 @@ def make_prepared_files(tmp_path):
     return prepared
 
 
+def make_metadata(table, rows, schema=None):
+    """Return realistic BigQuery table metadata."""
+    if schema is None:
+        schema = expected_bigquery_schema(table)
+
+    return json.dumps(
+        {
+            "numRows": str(rows),
+            "schema": {"fields": schema},
+        }
+    )
+
+
 def test_staging_loads_and_validates_all_tables(tmp_path):
     plan = make_plan(tmp_path)
     prepared = make_prepared_files(tmp_path)
@@ -51,8 +65,9 @@ def test_staging_loads_and_validates_all_tables(tmp_path):
 
         if "show" in command:
             table_index = (len(commands) // 2) - 1
+            table = LOAD_ORDER[table_index]
             rows = table_index + 1
-            stdout = json.dumps({"numRows": str(rows)})
+            stdout = make_metadata(table, rows)
         else:
             stdout = ""
 
@@ -93,7 +108,7 @@ def test_staging_stops_on_row_count_mismatch(tmp_path):
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"numRows": "999"}),
+            stdout=make_metadata(LOAD_ORDER[0], 999),
             stderr="",
         )
 
@@ -105,6 +120,97 @@ def test_staging_stops_on_row_count_mismatch(tmp_path):
         )
 
     assert len(commands) == 2
+
+
+def test_staging_stops_on_schema_mismatch(tmp_path):
+    plan = make_plan(tmp_path)
+    prepared = make_prepared_files(tmp_path)
+    commands = []
+
+    table = LOAD_ORDER[0]
+    wrong_schema = expected_bigquery_schema(table)
+    wrong_schema[0] = {
+        **wrong_schema[0],
+        "type": "BOOLEAN",
+    }
+
+    def fake_runner(command):
+        commands.append(command)
+
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=make_metadata(table, 1, wrong_schema),
+            stderr="",
+        )
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        publish_staging_tables(
+            plan,
+            prepared,
+            runner=fake_runner,
+        )
+
+    assert len(commands) == 2
+
+
+@pytest.mark.parametrize(
+    ("column", "wrong_type"),
+    [
+        ("invoice_date", "TIMESTAMP"),
+        ("unit_price", "BIGNUMERIC"),
+    ],
+)
+def test_staging_rejects_fact_sales_type_mismatch(
+    tmp_path,
+    column,
+    wrong_type,
+):
+    plan = make_plan(tmp_path)
+    prepared = make_prepared_files(tmp_path)
+    commands = []
+
+    fact_index = LOAD_ORDER.index("fact_sales")
+    wrong_schema = expected_bigquery_schema("fact_sales")
+
+    wrong_schema = [
+        {**field, "type": wrong_type} if field["name"] == column else field
+        for field in wrong_schema
+    ]
+
+    def fake_runner(command):
+        commands.append(command)
+
+        if "show" in command:
+            table_index = (len(commands) // 2) - 1
+            table = LOAD_ORDER[table_index]
+            rows = table_index + 1
+
+            schema = (
+                wrong_schema
+                if table == "fact_sales"
+                else expected_bigquery_schema(table)
+            )
+
+            stdout = make_metadata(table, rows, schema)
+        else:
+            stdout = ""
+
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=stdout,
+            stderr="",
+        )
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        publish_staging_tables(
+            plan,
+            prepared,
+            runner=fake_runner,
+        )
+
+    assert len(commands) == 2 * (fact_index + 1)
 
 
 def test_staging_stops_on_load_failure(tmp_path):

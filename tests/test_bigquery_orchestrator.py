@@ -15,6 +15,7 @@ from commercelake.cloud.bigquery_orchestrator import (
     production_bigquery_runner,
 )
 from commercelake.cloud.bigquery_publisher import PublicationPlan
+from commercelake.cloud.bigquery_schema_validation import expected_bigquery_schema
 from commercelake.gold.monthly_mart import MonthlySalesCollector
 from commercelake.warehouse.loader import LOAD_ORDER, TABLE_SCHEMAS
 
@@ -152,10 +153,17 @@ def test_orchestrator_prepares_and_validates_six_tables(tmp_path):
             if f"_stage_{table}_" in table_name:
                 expected = 3 if table == "fact_sales" else 2
 
+                metadata = {
+                    "numRows": str(expected),
+                    "schema": {
+                        "fields": expected_bigquery_schema(table),
+                    },
+                }
+
                 return CompletedProcess(
                     command,
                     0,
-                    json.dumps({"numRows": str(expected)}),
+                    json.dumps(metadata),
                     "",
                 )
 

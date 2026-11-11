@@ -1,4 +1,4 @@
-"""Coordinate BigQuery staging loads and row-count reconciliation."""
+"""Coordinate BigQuery staging loads and contract reconciliation."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -6,6 +6,7 @@ from subprocess import CompletedProcess
 
 from commercelake.cloud.bigquery_cli import run_command
 from commercelake.cloud.bigquery_publisher import PublicationPlan
+from commercelake.cloud.bigquery_schema_validation import validate_bigquery_schema
 from commercelake.cloud.bigquery_staging import (
     build_staging_load_command,
     staging_table_name,
@@ -24,7 +25,7 @@ def publish_staging_tables(
     prepared_files: dict[str, Path],
     runner: CommandRunner = run_command,
 ) -> dict[str, int]:
-    """Load and reconcile six staging tables, stopping on any failure."""
+    """Load and validate all six staging tables against Gold contracts."""
     if set(prepared_files) != set(LOAD_ORDER):
         raise ValueError("Prepared files must match all six Gold tables")
 
@@ -36,8 +37,8 @@ def publish_staging_tables(
         for table in LOAD_ORDER
     }
 
-    # Validate every local input before executing the first cloud command.
-    resolved_files = {}
+    # Validate all local paths before the first cloud command.
+    resolved_files: dict[str, Path] = {}
 
     for table in LOAD_ORDER:
         path = Path(prepared_files[table]).resolve()
@@ -50,7 +51,7 @@ def publish_staging_tables(
 
         resolved_files[table] = path
 
-    results = {}
+    results: dict[str, int] = {}
 
     for table in LOAD_ORDER:
         stage = staging_table_name(table, plan.run_id)
@@ -82,8 +83,17 @@ def publish_staging_tables(
             metadata_output=metadata.stdout,
         )
 
+        validate_bigquery_schema(
+            table=table,
+            metadata_output=metadata.stdout,
+        )
+
         results[table] = actual_rows
-        print(f"PASS: {stage} ({actual_rows:,} rows)", flush=True)
+
+        print(
+            f"PASS: {stage} ({actual_rows:,} rows; schema validated)",
+            flush=True,
+        )
 
     return results
 
