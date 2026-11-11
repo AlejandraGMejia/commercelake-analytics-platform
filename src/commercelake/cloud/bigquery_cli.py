@@ -18,6 +18,11 @@ DECIMAL_TABLES = frozenset(
     }
 )
 
+DECIMAL_TARGET_TYPES = (
+    "--decimal_target_types=NUMERIC",
+    "--decimal_target_types=BIGNUMERIC",
+)
+
 
 def build_load_command(
     project_id: str,
@@ -48,7 +53,7 @@ def build_load_command(
     ]
 
     if table in DECIMAL_TABLES:
-        command.append("--decimal_target_types=BIGNUMERIC")
+        command.extend(DECIMAL_TARGET_TYPES)
 
     command.extend(
         [

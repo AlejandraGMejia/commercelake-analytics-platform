@@ -4,6 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from commercelake.cloud.bigquery_cli import (
+    DECIMAL_TABLES,
+    DECIMAL_TARGET_TYPES,
+)
 from commercelake.cloud.bigquery_staging import (
     build_staging_load_command,
     staging_table_name,
@@ -38,6 +42,26 @@ def test_staging_command_never_targets_production(table):
     assert destination in command
     assert production not in command
     assert "--replace" in command
+
+
+@pytest.mark.parametrize("table", LOAD_ORDER)
+def test_staging_decimal_configuration_matches_table(table):
+    command = build_staging_load_command(
+        PROJECT,
+        DATASET,
+        table,
+        RUN_ID,
+        Path(f"/tmp/{table}.parquet"),
+    )
+
+    actual_options = [
+        option for option in command if option.startswith("--decimal_target_types=")
+    ]
+
+    if table in DECIMAL_TABLES:
+        assert actual_options == list(DECIMAL_TARGET_TYPES)
+    else:
+        assert actual_options == []
 
 
 @pytest.mark.parametrize(
@@ -81,27 +105,3 @@ def test_rejects_unsupported_location():
             Path("/tmp/source.parquet"),
             location="EU",
         )
-
-
-def test_financial_staging_uses_bignumeric():
-    command = build_staging_load_command(
-        PROJECT,
-        DATASET,
-        "fact_sales",
-        RUN_ID,
-        Path("/tmp/fact_sales.parquet"),
-    )
-
-    assert "--decimal_target_types=BIGNUMERIC" in command
-
-
-def test_nonfinancial_staging_omits_bignumeric():
-    command = build_staging_load_command(
-        PROJECT,
-        DATASET,
-        "dim_product",
-        RUN_ID,
-        Path("/tmp/dim_product.parquet"),
-    )
-
-    assert "--decimal_target_types=BIGNUMERIC" not in command

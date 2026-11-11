@@ -6,6 +6,7 @@ from pathlib import Path
 from commercelake.cloud.bigquery_cli import (
     ALLOWED_TABLES,
     DECIMAL_TABLES,
+    DECIMAL_TARGET_TYPES,
 )
 from commercelake.cloud.bigquery_publisher import (
     DEFAULT_LOCATION,
@@ -54,7 +55,7 @@ def build_staging_load_command(
     ]
 
     if table in DECIMAL_TABLES:
-        command.append("--decimal_target_types=BIGNUMERIC")
+        command.extend(DECIMAL_TARGET_TYPES)
 
     command.extend(
         [

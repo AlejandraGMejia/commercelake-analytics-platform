@@ -9,6 +9,7 @@ import pytest
 from commercelake.cloud.bigquery_cli import (
     ALLOWED_TABLES,
     DECIMAL_TABLES,
+    DECIMAL_TARGET_TYPES,
     build_load_command,
     run_command,
 )
@@ -47,9 +48,21 @@ def test_decimal_configuration_matches_table(table):
         Path(f"/tmp/{table}.parquet"),
     )
 
-    has_decimal_option = "--decimal_target_types=BIGNUMERIC" in command
+    actual_options = [
+        option for option in command if option.startswith("--decimal_target_types=")
+    ]
 
-    assert has_decimal_option == (table in DECIMAL_TABLES)
+    if table in DECIMAL_TABLES:
+        assert actual_options == list(DECIMAL_TARGET_TYPES)
+    else:
+        assert actual_options == []
+
+
+def test_decimal_target_types_include_both_precisions():
+    assert DECIMAL_TARGET_TYPES == (
+        "--decimal_target_types=NUMERIC",
+        "--decimal_target_types=BIGNUMERIC",
+    )
 
 
 def test_allowed_tables_match_gold_load_order():
