@@ -130,44 +130,89 @@ def make_plan(tmp_path: Path) -> PublicationPlan:
 
 
 def test_orchestrator_prepares_and_validates_six_tables(tmp_path):
+    """Simulate the complete staging lifecycle without cloud writes."""
     plan = make_plan(tmp_path)
     commands = []
     temporary_root = tmp_path / "temporary"
 
+    created = set()
+    loaded = set()
+
+    expected_counts = {
+        table: sum(rows for _, rows in plan.files_by_table[table])
+        for table in LOAD_ORDER
+    }
+
+    def identify_table(command):
+        for table in LOAD_ORDER:
+            stage = f"_stage_{table}_{RUN_ID[:8]}"
+
+            if any(stage in part for part in command):
+                return table
+
+        raise AssertionError(f"Unexpected staging command: {command}")
+
     def fake_runner(command):
         commands.append(command)
+        table = identify_table(command)
+
+        if "show" in command:
+            if table not in created:
+                return CompletedProcess(
+                    command,
+                    1,
+                    "",
+                    f"Not found: Table {command[-1]}",
+                )
+
+            rows = expected_counts[table] if table in loaded else 0
+
+            metadata = {
+                "numRows": str(rows),
+                "schema": {
+                    "fields": expected_bigquery_schema(table),
+                },
+            }
+
+            return CompletedProcess(
+                command,
+                0,
+                json.dumps(metadata),
+                "",
+            )
+
+        if "mk" in command:
+            assert table not in created
+
+            schema_option = next(
+                option for option in command if option.startswith("--schema=")
+            )
+            schema_path = Path(schema_option.split("=", 1)[1])
+
+            assert schema_path.is_file()
+            assert json.loads(schema_path.read_text()) == (
+                expected_bigquery_schema(table)
+            )
+
+            created.add(table)
+            return CompletedProcess(command, 0, "", "")
 
         if "load" in command:
+            assert table in created
+            assert table not in loaded
+            assert "--replace_data" in command
+            assert "--replace" not in command
+
             source = Path(command[-1])
             assert source.exists()
 
-            if "_stage_fact_sales_" in command[-2]:
+            if table == "fact_sales":
                 assert pq.read_metadata(source).num_rows == 3
 
+            loaded.add(table)
             return CompletedProcess(command, 0, "", "")
 
-        assert "show" in command
-        table_name = command[-1].split(".")[-1]
-
-        for table in LOAD_ORDER:
-            if f"_stage_{table}_" in table_name:
-                expected = 3 if table == "fact_sales" else 2
-
-                metadata = {
-                    "numRows": str(expected),
-                    "schema": {
-                        "fields": expected_bigquery_schema(table),
-                    },
-                }
-
-                return CompletedProcess(
-                    command,
-                    0,
-                    json.dumps(metadata),
-                    "",
-                )
-
-        raise AssertionError("Unexpected staging table")
+        raise AssertionError(f"Unexpected BigQuery command: {command}")
 
     result = execute_staging_publication(
         plan,
@@ -175,8 +220,39 @@ def test_orchestrator_prepares_and_validates_six_tables(tmp_path):
         temporary_root=temporary_root,
     )
 
-    assert len(commands) == 12
-    assert set(result.table_row_counts) == set(LOAD_ORDER)
+    assert len(commands) == 30
+
+    # The first six commands must check existence without writing.
+    assert all("show" in command for command in commands[:6])
+
+    # Each table must be created, checked, loaded and checked again.
+    for index, table in enumerate(LOAD_ORDER):
+        offset = 6 + index * 4
+        table_commands = commands[offset : offset + 4]
+
+        assert ["mk" in command for command in table_commands] == [
+            True,
+            False,
+            False,
+            False,
+        ]
+        assert ["show" in command for command in table_commands] == [
+            False,
+            True,
+            False,
+            True,
+        ]
+        assert ["load" in command for command in table_commands] == [
+            False,
+            False,
+            True,
+            False,
+        ]
+        assert all(identify_table(command) == table for command in table_commands)
+
+    assert created == set(LOAD_ORDER)
+    assert loaded == set(LOAD_ORDER)
+    assert result.table_row_counts == expected_counts
     assert result.table_row_counts["fact_sales"] == 3
     assert result.total_rows == 13
     assert not list(temporary_root.rglob("*.parquet"))
