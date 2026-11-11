@@ -36,16 +36,20 @@ class VersionPublicationResult:
 
 
 class VersionPublicationError(RuntimeError):
-    """Publication failed; some versioned tables may already exist."""
+    """Publication failed; versioned tables may require inspection."""
 
     def __init__(
         self,
         message: str,
         *,
         completed_copies: tuple[str, ...],
+        uncertain_destination: str | None = None,
+        phase: str = "unknown",
     ) -> None:
         super().__init__(message)
         self.completed_copies = completed_copies
+        self.uncertain_destination = uncertain_destination
+        self.phase = phase
 
 
 def publish_gold_version(
@@ -55,23 +59,26 @@ def publish_gold_version(
 ) -> VersionPublicationResult:
     """Publish and verify Gold versions without activating consumers.
 
-    The runner is explicitly injected. This function never deletes
-    tables or automatically activates a published version.
+    All operations use an explicitly injected runner.
+    No table is deleted or activated automatically.
     """
     validate_promotion_plan(plan)
 
     if not callable(runner):
         raise TypeError("An explicit callable runner is required")
 
-    # All read-only preflight checks run before the first copy.
     validate_staging_preflight(plan, runner=runner)
     check_versioned_destinations(plan, runner=runner)
 
     copy_plan = build_versioned_copy_plan(plan)
+
     completed = []
+    uncertain_destination = None
+    phase = "copy"
 
     try:
         for item in copy_plan:
+            uncertain_destination = item.destination_table
             command = list(item.command)
             result = runner(command)
 
@@ -82,9 +89,13 @@ def publish_gold_version(
                 raise RuntimeError(f"BigQuery copy failed for {item.destination_table}")
 
             completed.append(item.destination_table)
+            uncertain_destination = None
 
-        # Verify all six destinations after the copy phase.
+        phase = "verification"
+
         for table in plan.tables:
+            uncertain_destination = table.version_name
+
             command = build_show_command(
                 project_id=plan.project_id,
                 dataset=plan.dataset,
@@ -112,11 +123,15 @@ def publish_gold_version(
                 metadata_output=metadata.stdout,
             )
 
+            uncertain_destination = None
+
     except Exception as exc:
         raise VersionPublicationError(
             "Gold version publication failed; "
-            "inspect any existing versioned destinations before retrying",
+            "inspect versioned destinations before retrying",
             completed_copies=tuple(completed),
+            uncertain_destination=uncertain_destination,
+            phase=phase,
         ) from exc
 
     return VersionPublicationResult(
