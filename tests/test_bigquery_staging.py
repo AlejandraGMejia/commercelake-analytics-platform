@@ -41,7 +41,24 @@ def test_staging_command_never_targets_production(table):
 
     assert destination in command
     assert production not in command
-    assert "--replace" in command
+    assert "--replace_data" in command
+    assert "--replace" not in command
+
+
+@pytest.mark.parametrize("table", LOAD_ORDER)
+def test_staging_load_preserves_existing_schema(table):
+    command = build_staging_load_command(
+        PROJECT,
+        DATASET,
+        table,
+        RUN_ID,
+        Path(f"/tmp/{table}.parquet"),
+    )
+
+    assert command.count("--replace_data") == 1
+    assert "--replace" not in command
+    assert "--autodetect" not in command
+    assert "--schema_update_option" not in command
 
 
 @pytest.mark.parametrize("table", LOAD_ORDER)

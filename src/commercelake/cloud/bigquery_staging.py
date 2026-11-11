@@ -35,7 +35,7 @@ def build_staging_load_command(
     source_path: Path,
     location: str = DEFAULT_LOCATION,
 ) -> list[str]:
-    """Build a staging load command without executing it."""
+    """Build a staging load command that preserves the table schema."""
     validate_identifiers(project_id, dataset)
 
     if location != DEFAULT_LOCATION:
@@ -59,7 +59,7 @@ def build_staging_load_command(
 
     command.extend(
         [
-            "--replace",
+            "--replace_data",
             f"{project_id}:{dataset}.{stage_table}",
             str(source_path),
         ]
