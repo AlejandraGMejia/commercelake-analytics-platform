@@ -1,15 +1,24 @@
 """Conservative destination-existence checks for BigQuery Gold versions."""
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from subprocess import CalledProcessError, CompletedProcess
 
+from commercelake.cloud.bigquery_cli_errors import (
+    is_confirmed_missing,
+    is_explicit_table_not_found,
+)
 from commercelake.cloud.bigquery_promotion import PromotionPlan
 from commercelake.cloud.bigquery_promotion_preflight import (
     validate_promotion_plan,
 )
 from commercelake.cloud.bigquery_validation import build_show_command
+
+__all__ = [
+    "DestinationCheckResult",
+    "check_versioned_destinations",
+    "is_explicit_table_not_found",
+]
 
 CommandRunner = Callable[[list[str]], CompletedProcess[str]]
 
@@ -22,27 +31,6 @@ class DestinationCheckResult:
     available_destinations: tuple[str, ...]
 
 
-def is_explicit_table_not_found(
-    error_output: str,
-    *,
-    project_id: str,
-    dataset: str,
-    table: str,
-) -> bool:
-    """Accept only an exact, unambiguous BigQuery table-not-found error."""
-    if not isinstance(error_output, str):
-        raise TypeError("BigQuery error output must be text")
-
-    identifier = f"{project_id}:{dataset}.{table}"
-    pattern = (
-        r"Not found: Table "
-        + re.escape(identifier)
-        + r"(?: was not found in location [A-Za-z0-9_-]+)?"
-    )
-
-    return re.fullmatch(pattern, error_output.strip(), flags=re.IGNORECASE) is not None
-
-
 def check_versioned_destinations(
     plan: PromotionPlan,
     *,
@@ -50,8 +38,8 @@ def check_versioned_destinations(
 ) -> DestinationCheckResult:
     """Require proof that every version destination is absent.
 
-    This function executes only read-only `bq show` commands through
-    the explicitly supplied runner. Unknown errors fail closed.
+    Only read-only metadata commands are executed. Unknown errors
+    block publication.
     """
     validate_promotion_plan(plan)
 
@@ -70,11 +58,11 @@ def check_versioned_destinations(
 
         try:
             result = runner(command)
-        except CalledProcessError as exc:
-            error_output = exc.stderr
 
-            if not is_explicit_table_not_found(
-                error_output,
+        except CalledProcessError as exc:
+            if not is_confirmed_missing(
+                exc.stdout,
+                exc.stderr,
                 project_id=plan.project_id,
                 dataset=plan.dataset,
                 table=table.version_name,
@@ -92,7 +80,8 @@ def check_versioned_destinations(
                     f"BigQuery destination already exists: {table.version_name}"
                 )
 
-            if not is_explicit_table_not_found(
+            if not is_confirmed_missing(
+                result.stdout,
                 result.stderr,
                 project_id=plan.project_id,
                 dataset=plan.dataset,

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from subprocess import CalledProcessError, CompletedProcess
 from typing import Literal
 
-from commercelake.cloud.bigquery_destination_guard import (
-    is_explicit_table_not_found,
+from commercelake.cloud.bigquery_cli_errors import (
+    is_confirmed_missing,
 )
 from commercelake.cloud.bigquery_promotion import PromotionPlan
 from commercelake.cloud.bigquery_promotion_preflight import (
@@ -44,7 +44,7 @@ class RecoveryInspectionResult:
 
     @property
     def ready(self) -> bool:
-        """Only six validated destinations can be considered ready."""
+        """Require all six destinations to match the Gold contract."""
         return len(self.tables) == 6 and all(
             table.status == "valid" for table in self.tables
         )
@@ -70,7 +70,7 @@ def inspect_gold_version(
     *,
     runner: CommandRunner,
 ) -> RecoveryInspectionResult:
-    """Inspect all six destinations without modifying cloud resources."""
+    """Inspect six versioned destinations without changing cloud resources."""
     validate_promotion_plan(plan)
 
     if not callable(runner):
@@ -93,7 +93,8 @@ def inspect_gold_version(
             metadata = runner(command)
 
         except CalledProcessError as exc:
-            if is_explicit_table_not_found(
+            if is_confirmed_missing(
+                exc.stdout,
                 exc.stderr,
                 project_id=plan.project_id,
                 dataset=plan.dataset,
@@ -116,7 +117,8 @@ def inspect_gold_version(
                 detail = "Runner returned an unsupported response"
 
             elif metadata.returncode != 0:
-                if isinstance(metadata.stderr, str) and is_explicit_table_not_found(
+                if is_confirmed_missing(
+                    metadata.stdout,
                     metadata.stderr,
                     project_id=plan.project_id,
                     dataset=plan.dataset,
