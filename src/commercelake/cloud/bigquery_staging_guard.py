@@ -4,6 +4,9 @@ from collections.abc import Callable
 from subprocess import CalledProcessError, CompletedProcess
 
 from commercelake.cloud.bigquery_cli_errors import is_confirmed_missing
+from commercelake.cloud.bigquery_ingestion_staging import (
+    ingestion_staging_table_name,
+)
 from commercelake.cloud.bigquery_staging import staging_table_name
 from commercelake.cloud.bigquery_validation import build_show_command
 
@@ -18,16 +21,22 @@ def require_staging_table_absent(
     *,
     runner: CommandRunner,
     location: str = "US",
+    ingestion: bool = False,
 ) -> str:
-    """Confirm that a staging destination does not already exist.
-
-    Executes only a read-only BigQuery metadata command.
-    Existing tables and ambiguous errors fail closed.
-    """
+    """Require a staging destination to be confirmed absent."""
     if not callable(runner):
         raise TypeError("An explicit callable runner is required")
 
-    stage = staging_table_name(table, run_id)
+    if not isinstance(ingestion, bool):
+        raise TypeError("ingestion must be a boolean")
+
+    if ingestion and table != "fact_sales":
+        raise ValueError("Ingestion staging is only supported for fact_sales")
+
+    if ingestion:
+        stage = ingestion_staging_table_name(table, run_id)
+    else:
+        stage = staging_table_name(table, run_id)
 
     command = build_show_command(
         project_id=project_id,
@@ -48,13 +57,17 @@ def require_staging_table_absent(
         ):
             return stage
 
-        raise RuntimeError(f"Cannot verify staging destination: {stage}") from exc
+        raise RuntimeError(
+            f"Cannot verify staging destination: {stage}"
+        ) from exc
 
     if not isinstance(result, CompletedProcess):
         raise TypeError("Runner must return a CompletedProcess")
 
     if result.returncode == 0:
-        raise FileExistsError(f"BigQuery staging table already exists: {stage}")
+        raise FileExistsError(
+            f"BigQuery staging table already exists: {stage}"
+        )
 
     if not is_confirmed_missing(
         result.stdout,
@@ -63,6 +76,8 @@ def require_staging_table_absent(
         dataset=dataset,
         table=stage,
     ):
-        raise RuntimeError(f"Cannot verify staging destination: {stage}")
+        raise RuntimeError(
+            f"Cannot verify staging destination: {stage}"
+        )
 
     return stage

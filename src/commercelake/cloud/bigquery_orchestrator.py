@@ -14,6 +14,7 @@ from commercelake.cloud.bigquery_publisher import (
     PublicationPlan,
     build_plan,
 )
+from commercelake.cloud.bigquery_staging_insert import validate_query_budget
 from commercelake.cloud.bigquery_staging_runner import publish_staging_tables
 from commercelake.cloud.gold_financial_validation import validate_gold_financials
 from commercelake.warehouse.loader import LOAD_ORDER
@@ -40,13 +41,19 @@ def execute_staging_publication(
     plan: PublicationPlan,
     *,
     runner: CommandRunner,
+    maximum_bytes_billed: int | None = None,
     temporary_root: Path | None = None,
 ) -> StagingPublicationResult:
-    """Validate Gold finances before publishing to staging tables.
+    """Validate Gold finances before publishing isolated staging tables.
 
-    The runner must be supplied explicitly. This function never promotes
-    staging tables to production.
+    The caller must supply a runner and a query billing limit.
+    This function never promotes staging tables to production.
     """
+    if not callable(runner):
+        raise TypeError("An explicit callable runner is required")
+
+    budget = validate_query_budget(maximum_bytes_billed)
+
     if set(plan.files_by_table) != set(LOAD_ORDER):
         raise ValueError("Publication plan must contain all six Gold tables")
 
@@ -59,22 +66,29 @@ def execute_staging_publication(
             mart_file=prepared["mart_monthly_sales"],
         )
 
-        expected_fact_rows = sum(rows for _, rows in plan.files_by_table["fact_sales"])
+        expected_fact_rows = sum(
+            rows for _, rows in plan.files_by_table["fact_sales"]
+        )
 
         if financial_result["fact_rows"] != expected_fact_rows:
-            raise ValueError("Financial preflight fact_sales row count mismatch")
+            raise ValueError(
+                "Financial preflight fact_sales row count mismatch"
+            )
 
         expected_mart_rows = sum(
             rows for _, rows in plan.files_by_table["mart_monthly_sales"]
         )
 
         if financial_result["monthly_periods"] != expected_mart_rows:
-            raise ValueError("Financial preflight monthly period count mismatch")
+            raise ValueError(
+                "Financial preflight monthly period count mismatch"
+            )
 
         row_counts = publish_staging_tables(
             plan=plan,
             prepared_files=prepared,
             runner=runner,
+            maximum_bytes_billed=budget,
         )
 
     expected_counts = {
@@ -101,8 +115,14 @@ def publish_gold_to_staging(
     location: str = DEFAULT_LOCATION,
     temporary_root: Path | None = None,
     runner: CommandRunner,
+    maximum_bytes_billed: int | None = None,
 ) -> StagingPublicationResult:
-    """Build a Gold plan and execute an explicit staging publication."""
+    """Build a Gold plan and execute budget-controlled staging publication."""
+    if not callable(runner):
+        raise TypeError("An explicit callable runner is required")
+
+    budget = validate_query_budget(maximum_bytes_billed)
+
     plan = build_plan(
         gold_root=gold_root,
         project_id=project_id,
@@ -113,6 +133,7 @@ def publish_gold_to_staging(
     return execute_staging_publication(
         plan,
         runner=runner,
+        maximum_bytes_billed=budget,
         temporary_root=temporary_root,
     )
 

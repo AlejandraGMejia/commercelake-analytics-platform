@@ -7,12 +7,19 @@ from subprocess import CalledProcessError, CompletedProcess
 from tempfile import TemporaryDirectory
 
 from commercelake.cloud.bigquery_cli import run_command
+from commercelake.cloud.bigquery_ingestion_schema import (
+    expected_ingestion_schema,
+)
+from commercelake.cloud.bigquery_ingestion_staging import (
+    ingestion_staging_table_name,
+)
 from commercelake.cloud.bigquery_publisher import (
     PublicationPlan,
     validate_identifiers,
 )
 from commercelake.cloud.bigquery_schema_validation import (
     expected_bigquery_schema,
+    parse_bigquery_schema,
     validate_bigquery_schema,
 )
 from commercelake.cloud.bigquery_staging import (
@@ -22,8 +29,16 @@ from commercelake.cloud.bigquery_staging import (
 from commercelake.cloud.bigquery_staging_create import (
     build_staging_create_command,
 )
+from commercelake.cloud.bigquery_staging_dry_run import (
+    build_fact_sales_insert_dry_run_command,
+    validate_insert_dry_run,
+)
 from commercelake.cloud.bigquery_staging_guard import (
     require_staging_table_absent,
+)
+from commercelake.cloud.bigquery_staging_insert import (
+    build_fact_sales_insert_command,
+    validate_query_budget,
 )
 from commercelake.cloud.bigquery_validation import (
     build_show_command,
@@ -71,7 +86,6 @@ def _validate_local_inputs(
     if plan.location != "US":
         raise ValueError("Unsupported BigQuery location")
 
-    # Validate the run ID before any remote operation.
     staging_table_name(LOAD_ORDER[0], plan.run_id)
 
     resolved_files: dict[str, Path] = {}
@@ -89,7 +103,6 @@ def _validate_local_inputs(
             if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
                 raise ValueError(f"Invalid expected row count: {table}")
 
-            # Reject unsafe inventory paths, even when a prepared file exists.
             try:
                 safe_file(plan.run_directory, relative_path)
             except FileNotFoundError as exc:
@@ -113,25 +126,106 @@ def _validate_local_inputs(
     return resolved_files, expected_counts
 
 
+def _validate_metadata(
+    *,
+    table: str,
+    stage: str,
+    expected_rows: int,
+    expected_schema: list[dict[str, str]],
+    output: str,
+) -> int:
+    """Validate exact row count, column order, types and nullability."""
+    rows = validate_table_row_count(
+        table=stage,
+        expected_rows=expected_rows,
+        metadata_output=output,
+    )
+
+    actual_schema = parse_bigquery_schema(output)
+
+    if actual_schema != expected_schema:
+        raise ValueError(
+            f"BigQuery schema mismatch for {stage}: "
+            f"expected {expected_schema}, got {actual_schema}"
+        )
+
+    if expected_schema == expected_bigquery_schema(table):
+        validate_bigquery_schema(table, output)
+
+    return rows
+
+
+def _run_validated_fact_sales_insert(
+    *,
+    plan: PublicationPlan,
+    ingestion_stage: str,
+    budget: int,
+    runner: CommandRunner,
+) -> int:
+    """Require a successful exact-SQL dry run before executing INSERT."""
+    insert_command = build_fact_sales_insert_command(
+        project_id=plan.project_id,
+        dataset=plan.dataset,
+        run_id=plan.run_id,
+        source_table=ingestion_stage,
+        maximum_bytes_billed=budget,
+        location=plan.location,
+    )
+
+    dry_run_command = build_fact_sales_insert_dry_run_command(
+        project_id=plan.project_id,
+        dataset=plan.dataset,
+        run_id=plan.run_id,
+        source_table=ingestion_stage,
+        maximum_bytes_billed=budget,
+        location=plan.location,
+    )
+
+    if dry_run_command[-1] != insert_command[-1]:
+        raise ValueError("Dry-run SQL differs from execution SQL")
+
+    print("Validating fact_sales INSERT with BigQuery dry run", flush=True)
+
+    dry_run_result = _require_success(runner, dry_run_command)
+
+    estimate = validate_insert_dry_run(
+        dry_run_result.stdout,
+        maximum_bytes_billed=budget,
+    )
+
+    print(
+        f"PASS: fact_sales dry run "
+        f"({estimate:,} estimated bytes; budget {budget:,})",
+        flush=True,
+    )
+
+    _require_success(runner, insert_command)
+    return estimate
+
+
 def publish_staging_tables(
     plan: PublicationPlan,
     prepared_files: dict[str, Path],
     runner: CommandRunner = run_command,
+    *,
+    maximum_bytes_billed: int | None = None,
 ) -> dict[str, int]:
-    """Create, load and validate all six staging tables.
+    """Publish six staging tables, using two phases for fact_sales.
 
-    This function performs BigQuery writes when called with the real
-    command runner. Tests must inject a simulated runner.
+    This function performs cloud writes with the real command runner.
+    Tests must inject a simulated runner.
     """
     if not callable(runner):
         raise TypeError("An explicit callable runner is required")
+
+    budget = validate_query_budget(maximum_bytes_billed)
 
     resolved_files, expected_counts = _validate_local_inputs(
         plan,
         prepared_files,
     )
 
-    # Check ALL destinations before the first write.
+    # Check every destination before the first write.
     for table in LOAD_ORDER:
         require_staging_table_absent(
             project_id=plan.project_id,
@@ -142,12 +236,21 @@ def publish_staging_tables(
             runner=runner,
         )
 
+    require_staging_table_absent(
+        project_id=plan.project_id,
+        dataset=plan.dataset,
+        table="fact_sales",
+        run_id=plan.run_id,
+        location=plan.location,
+        runner=runner,
+        ingestion=True,
+    )
+
     results: dict[str, int] = {}
 
     with TemporaryDirectory(prefix="commercelake_staging_") as directory:
         schema_directory = Path(directory)
 
-        # Prepare and validate ALL creation commands locally first.
         create_commands: dict[str, list[str]] = {}
         load_commands: dict[str, list[str]] = {}
         show_commands: dict[str, list[str]] = {}
@@ -155,10 +258,7 @@ def publish_staging_tables(
         for table in LOAD_ORDER:
             schema_path = schema_directory / f"{table}.json"
             schema_path.write_text(
-                json.dumps(
-                    expected_bigquery_schema(table),
-                    indent=2,
-                ),
+                json.dumps(expected_bigquery_schema(table), indent=2),
                 encoding="utf-8",
             )
 
@@ -171,15 +271,6 @@ def publish_staging_tables(
                 location=plan.location,
             )
 
-            load_commands[table] = build_staging_load_command(
-                project_id=plan.project_id,
-                dataset=plan.dataset,
-                table=table,
-                run_id=plan.run_id,
-                source_path=resolved_files[table],
-                location=plan.location,
-            )
-
             show_commands[table] = build_show_command(
                 project_id=plan.project_id,
                 dataset=plan.dataset,
@@ -187,45 +278,128 @@ def publish_staging_tables(
                 location=plan.location,
             )
 
+            if table != "fact_sales":
+                load_commands[table] = build_staging_load_command(
+                    project_id=plan.project_id,
+                    dataset=plan.dataset,
+                    table=table,
+                    run_id=plan.run_id,
+                    source_path=resolved_files[table],
+                    location=plan.location,
+                )
+
+        ingestion_stage = ingestion_staging_table_name(
+            "fact_sales",
+            plan.run_id,
+        )
+
+        ingestion_schema = expected_ingestion_schema("fact_sales")
+        ingestion_schema_path = schema_directory / "fact_sales_ingestion.json"
+        ingestion_schema_path.write_text(
+            json.dumps(ingestion_schema, indent=2),
+            encoding="utf-8",
+        )
+
+        ingestion_create = build_staging_create_command(
+            project_id=plan.project_id,
+            dataset=plan.dataset,
+            table="fact_sales",
+            run_id=plan.run_id,
+            schema_path=ingestion_schema_path,
+            location=plan.location,
+            ingestion=True,
+        )
+
+        ingestion_load = build_staging_load_command(
+            project_id=plan.project_id,
+            dataset=plan.dataset,
+            table="fact_sales",
+            run_id=plan.run_id,
+            source_path=resolved_files["fact_sales"],
+            location=plan.location,
+            ingestion=True,
+        )
+
+        ingestion_show = build_show_command(
+            project_id=plan.project_id,
+            dataset=plan.dataset,
+            table=ingestion_stage,
+            location=plan.location,
+        )
+
         for table in LOAD_ORDER:
             stage = staging_table_name(table, plan.run_id)
+
+            if table == "fact_sales":
+                print(
+                    f"Creating ingestion table: {ingestion_stage}",
+                    flush=True,
+                )
+                _require_success(runner, ingestion_create)
+
+                created_ingestion = _require_success(
+                    runner,
+                    ingestion_show,
+                )
+                _validate_metadata(
+                    table=table,
+                    stage=ingestion_stage,
+                    expected_rows=0,
+                    expected_schema=ingestion_schema,
+                    output=created_ingestion.stdout,
+                )
+
+                print(
+                    f"Loading ingestion table: {ingestion_stage}",
+                    flush=True,
+                )
+                _require_success(runner, ingestion_load)
+
+                loaded_ingestion = _require_success(
+                    runner,
+                    ingestion_show,
+                )
+                _validate_metadata(
+                    table=table,
+                    stage=ingestion_stage,
+                    expected_rows=expected_counts[table],
+                    expected_schema=ingestion_schema,
+                    output=loaded_ingestion.stdout,
+                )
 
             print(f"Creating staging table: {stage}", flush=True)
             _require_success(runner, create_commands[table])
 
-            # A newly created staging table must be empty and have
-            # exactly the expected schema BEFORE loading.
             created = _require_success(runner, show_commands[table])
-
-            validate_table_row_count(
-                table=stage,
-                expected_rows=0,
-                metadata_output=created.stdout,
-            )
-
-            validate_bigquery_schema(
+            _validate_metadata(
                 table=table,
-                metadata_output=created.stdout,
+                stage=stage,
+                expected_rows=0,
+                expected_schema=expected_bigquery_schema(table),
+                output=created.stdout,
             )
 
-            print(f"Loading staging table: {stage}", flush=True)
-            _require_success(runner, load_commands[table])
+            if table == "fact_sales":
+                _run_validated_fact_sales_insert(
+                    plan=plan,
+                    ingestion_stage=ingestion_stage,
+                    budget=budget,
+                    runner=runner,
+                )
+            else:
+                print(f"Loading staging table: {stage}", flush=True)
+                _require_success(runner, load_commands[table])
 
             loaded = _require_success(runner, show_commands[table])
-
-            actual_rows = validate_table_row_count(
-                table=stage,
-                expected_rows=expected_counts[table],
-                metadata_output=loaded.stdout,
-            )
-
-            validate_bigquery_schema(
+            actual_rows = _validate_metadata(
                 table=table,
-                metadata_output=loaded.stdout,
+                stage=stage,
+                expected_rows=expected_counts[table],
+                expected_schema=expected_bigquery_schema(table),
+                output=loaded.stdout,
             )
 
             results[table] = actual_rows
-
             print(
                 f"PASS: {stage} ({actual_rows:,} rows; schema validated)",
                 flush=True,

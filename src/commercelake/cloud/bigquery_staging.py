@@ -34,14 +34,28 @@ def build_staging_load_command(
     run_id: str,
     source_path: Path,
     location: str = DEFAULT_LOCATION,
+    *,
+    ingestion: bool = False,
 ) -> list[str]:
-    """Build a staging load command that preserves the table schema."""
+    """Build a Parquet load command for an isolated staging table."""
     validate_identifiers(project_id, dataset)
 
     if location != DEFAULT_LOCATION:
         raise ValueError("Unsupported BigQuery location")
 
+    if not isinstance(ingestion, bool):
+        raise TypeError("ingestion must be a boolean")
+
     stage_table = staging_table_name(table, run_id)
+
+    if ingestion:
+        if table != "fact_sales":
+            raise ValueError(
+                "Ingestion staging is only supported for fact_sales"
+            )
+
+        stage_table = f"_ingest_{table}_{run_id[:8]}"
+
     source_path = Path(source_path)
 
     if source_path.suffix.lower() != ".parquet":
